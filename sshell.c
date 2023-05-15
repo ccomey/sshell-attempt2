@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h> // needed for flags in open()
 
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -53,6 +54,30 @@ void printCommandStruct(struct Command* cmd){
     }
 }
 
+void redirectOutput(const char* filename, const bool redirecting_output, const bool redirecting_error){
+        // printf("running redirectOutput\n");
+
+        printf("%d %d\n", redirecting_output, redirecting_error);
+
+        if (!redirecting_output){
+            return;
+        }
+
+        // the flags are as follows
+        //make destFile write-only
+        // create destFile with read and write permissions if it does not exist
+        // truncate the file's contents if it is longer than its new contents
+        int destFile = open(filename, O_WRONLY | O_CREAT, 0666 | O_TRUNC, 0);
+        dup2(destFile, STDOUT_FILENO);
+
+        // if we are redirecting stderr, redirect that to destFile too
+        if (redirecting_error){
+                dup2(destFile, STDERR_FILENO);
+        }
+
+        close(destFile);
+}
+
 /**
  * removes leading and trailing whitespace
  * removes leading whitespace by incrementing the pointer until it reaches a non-space
@@ -76,24 +101,25 @@ char* stripWhiteSpace(char* str){
         return str;
 }
 
-bool parseOutputRedirection(const char* cmd_line, char* core_command, char* output_file){
-    char* output_token = strstr(cmd_line, ">");
+bool parseOutputRedirection(const char* cmd_line, char* core_command, char* output_file, bool redirect_error){
+    char* output_token = redirect_error ? ">&" : ">";
+    char* ptr_to_output_token = strstr(cmd_line, output_token);
     // printf("line1\n");
 
     strcpy(core_command, cmd_line);
 
-    if (!output_token){
+    if (!ptr_to_output_token){
         output_file = NULL;
         return false;
     }
 
     // printf("%p - %p = %ld\n", output_token, cmd_line, (output_token-cmd_line));
-    core_command[output_token-cmd_line] = '\0';
+    core_command[ptr_to_output_token-cmd_line] = '\0';
     // printf("line3\n");
 
     strcpy(output_file, cmd_line);
     // printf("output_token+1 = %s\n", (output_token+1));
-    char* output_file_retval = stripWhiteSpace(output_token+1);
+    char* output_file_retval = stripWhiteSpace(ptr_to_output_token+strlen(output_token));
     strcpy(output_file, output_file_retval);
     // printf("output_file = %s\n", output_file);
     return true;
@@ -151,6 +177,10 @@ int main(){
         char* nl;
         int retval = 1;
 
+        int stdout_backup = dup(STDOUT_FILENO);
+        int stderr_backup = dup(STDERR_FILENO);
+        enum redirect_statuses{NONE, OUT, OUT_AND_ERR} redirect_status;
+
         // print prompt
         printf("sshell$ ");
         fflush(stdout);
@@ -173,7 +203,19 @@ int main(){
         char core_command[sizeof(cmd)];
         char output_file[sizeof(cmd)];
 
-        parseOutputRedirection(cmd, core_command, output_file);
+        if (parseOutputRedirection(cmd, core_command, output_file, true)){
+            redirect_status = OUT_AND_ERR;
+        } else {
+            if (parseOutputRedirection(cmd, core_command, output_file, false)){
+                redirect_status = OUT;
+            } else {
+                redirect_status = NONE;
+            }
+        }
+
+        printf("redirect status = %d\n", redirect_status);
+        redirectOutput(output_file, !(redirect_status == NONE), redirect_status == OUT_AND_ERR);
+
         // printf("core command: %s\noutput file: %s\n", core_command, output_file);
 
         struct Command* cmd1 = initCommand();
@@ -200,6 +242,15 @@ int main(){
         } else {
             int status;
             wait(&status);
+        }
+
+        // reset output and error back to normal if they were changed
+        if (redirect_status == OUT || redirect_status == OUT_AND_ERR){
+                dup2(stdout_backup, STDOUT_FILENO);
+        }
+
+        if (redirect_status == OUT_AND_ERR){
+                dup2(stderr_backup, STDERR_FILENO);
         }
         
         fprintf(stdout, "Return status value for '%s': %d\n", cmd, retval);
