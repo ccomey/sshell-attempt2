@@ -12,15 +12,20 @@
 #define TOKEN_MAX 32
 #define MAX_ARGS 16
 
+// each command on a line (multiple can be input using piping)
+// args has to be dynamically allocated
 struct Command{
     char main_command[TOKEN_MAX];
     unsigned num_args;
     char** args;
 };
 
+// dynamically allocate and initialize a command struct
 struct Command* initCommand(void){
     struct Command* command = malloc(sizeof(struct Command));
-    command->main_command[0] = '\0';
+
+    // memset is used to avoid potentially buggy chars like unintended null terminators
+    memset(command->main_command[0], '*', TOKEN_MAX * sizeof(char));
     command->num_args = 0;
     command->args = malloc(MAX_ARGS * sizeof(char*));
 
@@ -32,6 +37,8 @@ struct Command* initCommand(void){
     return command;
 }
 
+// deallocate a command struct
+// returns false if the parameter is null, or true otherwise
 bool destroyCommand(struct Command* command){
     if (command == NULL){
         return false;
@@ -47,6 +54,7 @@ bool destroyCommand(struct Command* command){
     return true;
 }
 
+// print the command's args
 void printCommandStruct(struct Command* cmd){
     printf("main command: %s\n", cmd->main_command);
     for (unsigned i = 0; i < cmd->num_args; i++){
@@ -54,10 +62,12 @@ void printCommandStruct(struct Command* cmd){
     }
 }
 
+// set up the file redirection using dup2
+// will redirect output, or output and error, or neither
 void redirectOutput(const char* filename, const bool redirecting_output, const bool redirecting_error){
         // printf("running redirectOutput\n");
 
-        printf("%d %d\n", redirecting_output, redirecting_error);
+        // printf("%d %d\n", redirecting_output, redirecting_error);
 
         if (!redirecting_output){
             return;
@@ -101,7 +111,9 @@ char* stripWhiteSpace(char* str){
         return str;
 }
 
-bool parseOutputRedirection(const char* cmd_line, char* core_command, char* output_file, bool redirect_error){
+// parse the command line for the output token (>& if redirecting output and error, > if redirecting only output, and none otherwise)
+// core_command is set to the part of the command line before the token, and output file to what comes after
+bool parseOutputRedirection(const char* cmd_line, char* core_command, char* output_file, const bool redirect_error){
     char* output_token = redirect_error ? ">&" : ">";
     char* ptr_to_output_token = strstr(cmd_line, output_token);
     // printf("line1\n");
@@ -125,6 +137,7 @@ bool parseOutputRedirection(const char* cmd_line, char* core_command, char* outp
     return true;
 }
 
+// parses a command for args and inserts them into a struct
 bool parseArgs(const char* cmd_line, struct Command* command){
 
 
