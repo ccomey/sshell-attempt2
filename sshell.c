@@ -102,10 +102,10 @@ bool parseOutputRedirection(const char* cmd_line, char* core_command, char* outp
 bool parseArgs(const char* cmd_line, struct Command* command){
 
 
-    char cmd_copy_array[sizeof(cmd_line)];
+    char cmd_copy_array[strlen(cmd_line) * sizeof(char)];
     strcpy(cmd_copy_array, cmd_line);
     char* cmd_copy = &cmd_copy_array[0];
-    printf("set up cmd_copy\n");
+    // printf("set up cmd_copy\n");
 
     // command is the first word in cmd
     // ex: in $ ls -l, ls is the main_command
@@ -149,7 +149,7 @@ int main(){
 
     while (1){
         char* nl;
-        // int retval = 1;
+        int retval = 1;
 
         // print prompt
         printf("sshell$ ");
@@ -174,12 +174,37 @@ int main(){
         char output_file[sizeof(cmd)];
 
         parseOutputRedirection(cmd, core_command, output_file);
-        printf("core command: %s\noutput file: %s\n", core_command, output_file);
+        // printf("core command: %s\noutput file: %s\n", core_command, output_file);
 
         struct Command* cmd1 = initCommand();
 
-        destroyCommand(cmd1);
+        parseArgs(core_command, cmd1);
+        // printCommandStruct(cmd1);
+
+        if (strcmp(cmd1->main_command, "exit") == 0){
+            destroyCommand(cmd1);
+            break;
+        }
+
+
+        if (!fork()){
+            retval = execvp(cmd1->main_command, cmd1->args);
+
+            if (retval != 0){
+                fprintf(stderr, "command not found\n");
+            }
+
+            destroyCommand(cmd1);
+            exit(retval);
+
+        } else {
+            int status;
+            wait(&status);
+        }
+        
+        fprintf(stdout, "Return status value for '%s': %d\n", cmd, retval);
     }
+
 
     return 0;
 }
