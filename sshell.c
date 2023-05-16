@@ -12,6 +12,9 @@
 #define TOKEN_MAX 32
 #define MAX_ARGS 16
 
+int mallocs = 0;
+long int bytes = 0;
+
 // each command on a line (multiple can be input using piping)
 // args has to be dynamically allocated
 struct Command{
@@ -23,17 +26,25 @@ struct Command{
 // dynamically allocate and initialize a command struct
 struct Command* initCommand(void){
     struct Command* command = malloc(sizeof(struct Command));
+    bytes += sizeof(struct Command);
+    mallocs++;
 
     // memset is used to avoid potentially buggy chars like unintended null terminators
-    memset(command->main_command[0], '*', TOKEN_MAX * sizeof(char));
+    memset(command->main_command, '*', TOKEN_MAX * sizeof(char));
     command->num_args = 0;
     command->args = malloc(MAX_ARGS * sizeof(char*));
+    mallocs++;
+    bytes += MAX_ARGS * sizeof(char*);
 
     for (unsigned i = 0; i < MAX_ARGS; i++){
         command->args[i] = malloc(TOKEN_MAX * sizeof(char));
         memset(command->args[i], '*', TOKEN_MAX * sizeof(char));
+        mallocs++;
+        bytes += TOKEN_MAX * sizeof(char);
     }
 
+    // printf("initCommand: %d mallocs\n", mallocs);
+    // printf("initCommand: %ld bytes\n", bytes);
     return command;
 }
 
@@ -45,12 +56,19 @@ bool destroyCommand(struct Command* command){
     }
 
     for (unsigned i = 0; i < MAX_ARGS; i++){
+        bytes -= sizeof(command->args[i]);
         free(command->args[i]);
+        mallocs--;
     }
 
-
+    bytes -= sizeof(command->args);
     free(command->args);
+    mallocs--;
+    bytes -= sizeof(command);
     free(command);
+    mallocs--;
+    // printf("destroyCommand: %d mallocs\n", mallocs);
+    // printf("destroyCommand: %ld bytes\n", bytes);
     return true;
 }
 
@@ -135,6 +153,28 @@ bool parseOutputRedirection(const char* cmd_line, char* core_command, char* outp
     strcpy(output_file, output_file_retval);
     // printf("output_file = %s\n", output_file);
     return true;
+}
+
+void parseForPipeBars(char* cmd_without_redirect, char commands[TOKEN_MAX][TOKEN_MAX], unsigned* num_commands){
+    // load each command between the | into commands
+    // the first is done separately because strtok requires different arguments
+    char* command1 = strtok(cmd_without_redirect, "|");
+    stripWhiteSpace(command1);
+    strcpy(commands[0], command1);
+    *(num_commands) = 1;
+
+    // add the rest of the commands to commands
+    for (unsigned i = 1; ; i++){
+            char* tok = strtok(NULL, "|");
+
+            if (tok == NULL){
+                    break;
+            }
+            
+            tok = stripWhiteSpace(tok);
+            strcpy(commands[i], tok);
+            *num_commands += 1;
+    }
 }
 
 // parses a command for args and inserts them into a struct
@@ -226,49 +266,130 @@ int main(){
             }
         }
 
-        printf("redirect status = %d\n", redirect_status);
+        // printf("redirect status = %d\n", redirect_status);
         redirectOutput(output_file, !(redirect_status == NONE), redirect_status == OUT_AND_ERR);
 
         // printf("core command: %s\noutput file: %s\n", core_command, output_file);
 
-        struct Command* cmd1 = initCommand();
+        // commands stores each command separated by a |, separately
+        char commands[TOKEN_MAX][TOKEN_MAX];
+        stripWhiteSpace(core_command);
 
-        parseArgs(core_command, cmd1);
-        // printCommandStruct(cmd1);
+        // the command should not start or end with a |, so reset if so
+        if (core_command[0] == '|'){
+                fprintf(stderr, "Error: missing command\n");
+                // restart_command_line_input = true;
+                continue;
+        } else if (*(strchr(core_command, '\0')-1) == '|'){
+                fprintf(stderr, "Error: missing command\n");
+                // restart_command_line_input = true;
+                continue;
+        }
 
-        if (strcmp(cmd1->main_command, "exit") == 0){
-            destroyCommand(cmd1);
+
+        // pipe parsing phase
+        unsigned num_commands = 0;
+        parseForPipeBars(core_command, commands, &num_commands);
+
+        // command_structs stores an array of Command structs
+        struct Command* command_structs[TOKEN_MAX];
+
+        // fill up command_structs
+        for (unsigned i = 0; i < num_commands; i++){
+            // allocate memory for the args for each command
+            command_structs[i] = initCommand();
+
+            // fill the members of each struct
+            parseArgs(commands[i], command_structs[i]);
+            // printCommandStruct(command_structs[i]);
+        }
+
+        if (num_commands == 1 && strcmp(command_structs[0]->main_command, "exit") == 0){
+            destroyCommand(command_structs[0]);
             break;
         }
 
 
-        if (!fork()){
-            retval = execvp(cmd1->main_command, cmd1->args);
+        pid_t PIDs[num_commands];
+        int FDs[num_commands-1][2];
+        // printf("num_commands = %d\n", num_commands);
 
-            if (retval != 0){
-                fprintf(stderr, "command not found\n");
+        for (unsigned i = 0; i < num_commands; i++){
+            if (i < num_commands-1){
+                pipe(FDs[i]);
+                // printf("FDs[%d] = %d,%d\n", i, FDs[i][0], FDs[i][1]);
             }
 
-            destroyCommand(cmd1);
-            exit(retval);
+            if (!(PIDs[i] = fork())){
+                // printf("%d running command %s\n", i, command_structs[i]->main_command);
 
-        } else {
-            int status;
-            wait(&status);
+                if (num_commands == 1){
+
+                } else {
+                    if (i > 0){
+                        close(FDs[i-1][1]);
+                        // printf("attempting to access FD[%d][0] = %d\n", i-1, FDs[i-1][0]);
+                        dup2(FDs[i-1][0], STDIN_FILENO);
+                        close(FDs[i-1][0]);
+                    }
+                    
+                    if (i < num_commands-1){
+                        close(FDs[i][0]);
+                        // printf("attempting to access FD[%d][1] = %d\n", i, FDs[i][1]);
+                        dup2(FDs[i][1], STDOUT_FILENO);
+                        close(FDs[i][1]);
+                    }
+                }
+
+                for (unsigned j = 0; j < num_commands-1; j++){
+                    if (j != i && j != i-1){
+                        close(FDs[j][0]);
+                        close(FDs[j][1]);
+                    }
+                }
+
+                retval = execvp(command_structs[i]->main_command, command_structs[i]->args);
+                if (retval != 0){
+                    fprintf(stderr, "command not found\n");
+                }
+
+                exit(retval);
+            }
         }
+
+        // close the FDs in the parent
+        for (unsigned i = 0; i < num_commands-1; i++){
+            close(FDs[i][0]);
+            close(FDs[i][1]);  
+        }
+
+        // wait for every child to finish
+        for (unsigned i = 0; i < num_commands; i++){
+            waitpid(PIDs[i], NULL, 0);
+        }
+
+        // printf("done waiting\n");
 
         // reset output and error back to normal if they were changed
         if (redirect_status == OUT || redirect_status == OUT_AND_ERR){
-                dup2(stdout_backup, STDOUT_FILENO);
+            dup2(stdout_backup, STDOUT_FILENO);
         }
 
         if (redirect_status == OUT_AND_ERR){
-                dup2(stderr_backup, STDERR_FILENO);
+            dup2(stderr_backup, STDERR_FILENO);
+        }
+
+        for (unsigned i = 0; i < num_commands; i++){
+            destroyCommand(command_structs[i]);
         }
         
         fprintf(stdout, "Return status value for '%s': %d\n", cmd, retval);
+        // printf("end of loop: %d mallocs\n", mallocs);
+        // printf("end of loop: %ld bytes\n", bytes);
     }
 
 
+    // printf("end of function: %d mallocs\n", mallocs);
+    // printf("end of function: %ld bytes\n", bytes);
     return 0;
 }
