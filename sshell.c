@@ -228,7 +228,8 @@ int main(){
 
     while (1){
         char* nl;
-        int retval = 1;
+        int retvals[CMDLINE_MAX];
+        memset(retvals, 0, CMDLINE_MAX * sizeof(int));
 
         int stdout_backup = dup(STDOUT_FILENO);
         int stderr_backup = dup(STDERR_FILENO);
@@ -306,6 +307,7 @@ int main(){
 
         if (num_commands == 1 && strcmp(command_structs[0]->main_command, "exit") == 0){
             destroyCommand(command_structs[0]);
+            printf("Bye...\n");
             break;
         }
 
@@ -348,12 +350,12 @@ int main(){
                     }
                 }
 
-                retval = execvp(command_structs[i]->main_command, command_structs[i]->args);
-                if (retval != 0){
+                retvals[i] = execvp(command_structs[i]->main_command, command_structs[i]->args);
+                if (retvals[i] != 0){
                     fprintf(stderr, "command not found\n");
                 }
 
-                exit(retval);
+                exit(retvals[i]);
             }
         }
 
@@ -368,8 +370,6 @@ int main(){
             waitpid(PIDs[i], NULL, 0);
         }
 
-        // printf("done waiting\n");
-
         // reset output and error back to normal if they were changed
         if (redirect_status == OUT || redirect_status == OUT_AND_ERR){
             dup2(stdout_backup, STDOUT_FILENO);
@@ -383,13 +383,13 @@ int main(){
             destroyCommand(command_structs[i]);
         }
         
-        fprintf(stdout, "Return status value for '%s': %d\n", cmd, retval);
-        // printf("end of loop: %d mallocs\n", mallocs);
-        // printf("end of loop: %ld bytes\n", bytes);
+        printf("+ completed '%s' ", cmd);
+        for (unsigned i = 0; i < num_commands; i++){
+            printf("[%d]", retvals[i]);
+        }
+
+        printf("\n");
     }
 
-
-    // printf("end of function: %d mallocs\n", mallocs);
-    // printf("end of function: %ld bytes\n", bytes);
     return 0;
 }
