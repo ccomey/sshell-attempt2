@@ -14,6 +14,8 @@
 
 int mallocs = 0;
 long int bytes = 0;
+char env_vars[26][TOKEN_MAX];
+char env_var_names[26] = {'a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z'};
 
 // each command on a line (multiple can be input using piping)
 // args has to be dynamically allocated
@@ -30,7 +32,7 @@ struct Command* initCommand(void){
     mallocs++;
 
     // memset is used to avoid potentially buggy chars like unintended null terminators
-    memset(command->main_command, '*', TOKEN_MAX * sizeof(char));
+    memset(command->main_command, '\0', TOKEN_MAX * sizeof(char));
     command->num_args = 0;
     command->args = malloc(MAX_ARGS * sizeof(char*));
     mallocs++;
@@ -38,7 +40,7 @@ struct Command* initCommand(void){
 
     for (unsigned i = 0; i < MAX_ARGS; i++){
         command->args[i] = malloc(TOKEN_MAX * sizeof(char));
-        memset(command->args[i], '*', TOKEN_MAX * sizeof(char));
+        memset(command->args[i], '\0', TOKEN_MAX * sizeof(char));
         mallocs++;
         bytes += TOKEN_MAX * sizeof(char);
     }
@@ -177,8 +179,29 @@ void parseForPipeBars(char* cmd_without_redirect, char commands[TOKEN_MAX][TOKEN
     }
 }
 
+int parseEnvVars(char* var, bool is_naked){
+    if (!is_naked && (strlen(var) != 2 || var[0] != '$')){
+        // printf("strlen = %ld\n", strlen(var));
+        return -1;
+    } else if (is_naked && strlen(var) != 1){
+        return -1;
+    }
+
+    int offset = is_naked ? 0 : 1;
+
+    for (int i = 0; i < 26; i++){
+        // printf("%d ", *(var+offset));
+        // printf("%d\n", env_var_names[i]);
+        if (*(var+offset) == env_var_names[i]){
+            return i;
+        }
+    }
+
+    return -1;
+}
+
 // parses a command for args and inserts them into a struct
-bool parseArgs(const char* cmd_line, struct Command* command){
+int parseArgs(const char* cmd_line, struct Command* command){
 
 
     char cmd_copy_array[strlen(cmd_line) * sizeof(char)];
@@ -189,6 +212,15 @@ bool parseArgs(const char* cmd_line, struct Command* command){
     // command is the first word in cmd
     // ex: in $ ls -l, ls is the main_command
     strcpy(command->main_command, strtok(cmd_copy, " "));
+    if (command->main_command[0] == '$'){
+        int envvar = parseEnvVars(command->main_command, false);
+        if (envvar == -1){
+            fprintf(stderr, "Error: invalid variable name\n");
+            return -1;
+        }
+
+        strcpy(command->main_command, env_vars[envvar]);
+    }
     // printf("main command = %s\n", command->main_command);
 
     // the first arg is the command itself
@@ -210,25 +242,39 @@ bool parseArgs(const char* cmd_line, struct Command* command){
             if (tok == NULL){
                     // strcpy doesn't work with NULL, so it must be set directly
                     command->args[i] = NULL;
-                    (command->num_args)++;
+                    //(command->num_args)++;
                     break;
             } else {
+                    if (tok[0] == '$'){
+                        int envvar = parseEnvVars(tok, false);
+                        if (envvar == -1){
+                            fprintf(stderr, "Error: invalid variable name\n");
+                            return -1;
+                        }
+
+                        tok = env_vars[envvar];
+                    }
+
                     strcpy(command->args[i], tok);
                     (command->num_args)++;
             }
     }
 
-    return command->num_args > 1;
+    return 0;
 }
 
 
 int main(){
 
     char cmd[CMDLINE_MAX];
+    for (int i = 0; i < 26; i++){
+        memset(env_vars[i], '\0', TOKEN_MAX);
+    }
 
     while (1){
         char* nl;
         int retvals[CMDLINE_MAX];
+        memset(cmd, 0, CMDLINE_MAX * sizeof(char));
         memset(retvals, 0, CMDLINE_MAX * sizeof(int));
 
         int stdout_backup = dup(STDOUT_FILENO);
@@ -295,20 +341,65 @@ int main(){
         // command_structs stores an array of Command structs
         struct Command* command_structs[TOKEN_MAX];
 
+        bool reset_loop = false;
+
         // fill up command_structs
         for (unsigned i = 0; i < num_commands; i++){
             // allocate memory for the args for each command
             command_structs[i] = initCommand();
 
             // fill the members of each struct
-            parseArgs(commands[i], command_structs[i]);
+            if (parseArgs(commands[i], command_structs[i]) == -1){
+                reset_loop = true;
+                destroyCommand(command_structs[i]);
+                break;
+            }
             // printCommandStruct(command_structs[i]);
         }
 
+        if (reset_loop){
+            continue;
+        }
+
+        // bool used_builtin_command = false;
+
         if (num_commands == 1 && strcmp(command_structs[0]->main_command, "exit") == 0){
+            // used_builtin_command = true;
             destroyCommand(command_structs[0]);
-            printf("Bye...\n");
+            fprintf(stderr, "Bye...\n");
+            fprintf(stderr, "+ completed '%s' [%d]\n", cmd, retvals[0]);
             break;
+        } else if (num_commands == 1 && strcmp(command_structs[0]->main_command, "pwd") == 0){
+            // create a buffer for getcwd
+            char buf[CMDLINE_MAX];
+            // getcwd does effectively the same thing as pwd, saving the current working directory inside buf
+            getcwd(buf, sizeof(buf));
+            printf("%s\n", buf);
+            fprintf(stderr, "+ completed '%s' [%d]\n", cmd, retvals[0]);
+            destroyCommand(command_structs[0]);
+            continue;
+        } else if (num_commands == 1 && strcmp(command_structs[0]->main_command, "cd") == 0){
+            chdir(command_structs[0]->args[1]);
+            destroyCommand(command_structs[0]);
+            fprintf(stderr, "+ completed '%s' [%d]\n", cmd, retvals[0]);
+            continue;
+        } else if (num_commands == 1 && strcmp(command_structs[0]->main_command, "set") == 0){
+            // used_builtin_command = true;
+            bool valid_syntax = command_structs[0]->num_args != 3 || strlen(command_structs[0]->args[1]) != 1;
+            if (valid_syntax){
+                fprintf(stderr, "Error: invalid variable name\n");
+            }
+
+            int envvar = parseEnvVars(command_structs[0]->args[1], true);
+            if (envvar == -1 && !valid_syntax){
+                fprintf(stderr, "Error: invalid variable name\n");
+            }
+
+            strcpy(env_vars[envvar], command_structs[0]->args[2]);
+            fprintf(stderr, "+ completed '%s' [%d]\n", cmd, envvar != 0);
+
+            destroyCommand(command_structs[0]);
+            continue;
         }
 
 
@@ -383,12 +474,12 @@ int main(){
             destroyCommand(command_structs[i]);
         }
         
-        printf("+ completed '%s' ", cmd);
+        fprintf(stderr, "+ completed '%s' ", cmd);
         for (unsigned i = 0; i < num_commands; i++){
-            printf("[%d]", retvals[i]);
+            fprintf(stderr, "[%d]", retvals[i]);
         }
 
-        printf("\n");
+        fprintf(stderr, "\n");
     }
 
     return 0;
